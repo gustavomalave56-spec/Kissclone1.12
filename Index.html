@@ -1,0 +1,909 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+
+void main() {
+  runApp(const KissKissGameApp());
+}
+
+class KissKissGameApp extends StatelessWidget {
+  const KissKissGameApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Kiss Kiss: Spin the Bottle',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF0A0E21),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFFFF2A7A),
+          secondary: Color(0xFF00E5FF),
+          surface: Color(0xFF151C33),
+        ),
+      ),
+      home: const GameRoomScreen(),
+    );
+  }
+}
+
+class Player {
+  final int id;
+  final String name;
+  final String avatarUrl;
+  final bool isFemale;
+  final bool isVip;
+  int kissCount;
+  int level;
+
+  Player({
+    required this.id,
+    required this.name,
+    required this.avatarUrl,
+    required this.isFemale,
+    this.isVip = false,
+    this.kissCount = 0,
+    this.level = 1,
+  });
+}
+
+class ChatMessage {
+  final String sender;
+  final String text;
+  final bool isSystem;
+  final DateTime time;
+
+  ChatMessage({
+    required this.sender,
+    required this.text,
+    this.isSystem = false,
+    required this.time,
+  });
+}
+
+class HeartParticle {
+  double x;
+  double y;
+  double scale;
+  double opacity;
+  double speedY;
+
+  HeartParticle({
+    required this.x,
+    required this.y,
+    this.scale = 1.0,
+    this.opacity = 1.0,
+    required this.speedY,
+  });
+}
+
+class GameRoomScreen extends StatefulWidget {
+  const GameRoomScreen({super.key});
+
+  @override
+  State<GameRoomScreen> createState() => _GameRoomScreenState();
+}
+
+class _GameRoomScreenState extends State<GameRoomScreen>
+    with TickerProviderStateMixin {
+  late AnimationController _bottleController;
+  late Animation<double> _bottleAnimation;
+
+  // Game state
+  bool _isSpinning = false;
+  int _currentTurnIndex = 0; // User is index 0
+  int _targetedPlayerIndex = -1;
+  double _currentBottleAngle = 0.0;
+  int _coins = 2450;
+  int _hearts = 180;
+
+  // Lists
+  late List<Player> _players;
+  final List<ChatMessage> _messages = [];
+  final List<HeartParticle> _heartParticles = [];
+  final TextEditingController _chatController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+
+  Timer? _particleTimer;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _players = List.generate(12, (index) {
+      bool isFemale = index % 2 == 0;
+      List<String> names = [
+        "Tú (Alex)",
+        "Sofia",
+        "Carlos",
+        "Elena",
+        "Mateo",
+        "Valentina",
+        "Lucas",
+        "Camila",
+        "Diego",
+        "Isabella",
+        "Gabriel",
+        "Lucía"
+      ];
+      return Player(
+        id: index,
+        name: names[index],
+        avatarUrl: 'https://i.pravatar.cc/150?img=${index + 10}',
+        isFemale: isFemale,
+        isVip: index % 3 == 0,
+        kissCount: math.Random().nextInt(45) + 5,
+        level: math.Random().nextInt(15) + 1,
+      );
+    });
+
+    _bottleController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 4),
+    );
+
+    _addSystemMessage("¡Bienvenido a la Sala VIP #408! Gira la botella para jugar.");
+
+    // Loop particle updater
+    _particleTimer = Timer.periodic(const Duration(milliseconds: 30), (timer) {
+      if (_heartParticles.isNotEmpty) {
+        setState(() {
+          for (var p in _heartParticles) {
+            p.y -= p.speedY;
+            p.opacity -= 0.02;
+          }
+          _heartParticles.removeWhere((p) => p.opacity <= 0);
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _bottleController.dispose();
+    _chatController.dispose();
+    _scrollController.dispose();
+    _particleTimer?.cancel();
+    super.dispose();
+  }
+
+  void _spinBottle() {
+    if (_isSpinning) return;
+
+    setState(() {
+      _isSpinning = true;
+      _targetedPlayerIndex = -1;
+    });
+
+    // Select random target player (excluding current spinner index 0)
+    int target = math.Random().nextInt(11) + 1;
+    
+    // Calculate angle for 12 positions: 360 degrees / 12 = 30 degrees (pi / 6 radians) per slot
+    double targetAngleOffset = (target * (2 * math.pi / 12));
+    double fullSpins = (math.Random().nextInt(5) + 5) * 2 * math.pi;
+    double totalTargetAngle = _currentBottleAngle + fullSpins + targetAngleOffset;
+
+    _bottleAnimation = Tween<double>(
+      begin: _currentBottleAngle,
+      end: totalTargetAngle,
+    ).animate(CurvedAnimation(
+      parent: _bottleController,
+      curve: Curves.decelerate,
+    ));
+
+    _bottleController.forward(from: 0.0).then((_) {
+      setState(() {
+        _isSpinning = false;
+        _currentBottleAngle = totalTargetAngle % (2 * math.pi);
+        _targetedPlayerIndex = target;
+      });
+
+      _addSystemMessage("La botella ha señalado a ${_players[target].name}! 💋");
+      _showKissDialog(_players[target]);
+    });
+  }
+
+  void _addSystemMessage(String text) {
+    setState(() {
+      _messages.add(ChatMessage(
+        sender: "SISTEMA",
+        text: text,
+        isSystem: true,
+        time: DateTime.now(),
+      ));
+    });
+    _scrollToBottom();
+  }
+
+  void _sendMessage() {
+    if (_chatController.text.trim().isEmpty) return;
+    setState(() {
+      _messages.add(ChatMessage(
+        sender: _players[0].name,
+        text: _chatController.text.trim(),
+        time: DateTime.now(),
+      ));
+      _chatController.clear();
+    });
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _spawnHeartParticles() {
+    final random = math.Random();
+    setState(() {
+      for (int i = 0; i < 15; i++) {
+        _heartParticles.add(
+          HeartParticle(
+            x: MediaQuery.of(context).size.width / 2 + (random.nextDouble() * 100 - 50),
+            y: MediaQuery.of(context).size.height / 2 + (random.nextDouble() * 100 - 50),
+            scale: random.nextDouble() * 0.8 + 0.5,
+            speedY: random.nextDouble() * 3 + 2,
+          ),
+        );
+      }
+    });
+  }
+
+  void _showKissDialog(Player target) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E2846),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          contentPadding: const EdgeInsets.all(20),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  CircleAvatar(
+                    radius: 45,
+                    backgroundColor: const Color(0xFFFF2A7A),
+                    child: CircleAvatar(
+                      radius: 42,
+                      backgroundImage: NetworkImage(target.avatarUrl),
+                    ),
+                  ),
+                  const Positioned(
+                    bottom: 0,
+                    right: 0,
+                    child: Text('💋', style: TextStyle(fontSize: 28)),
+                  )
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '¿Quieres besar a ${target.name}?',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Besos acumulados: ${target.kissCount}',
+                style: const TextStyle(color: Colors.white60, fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  // Pass Button
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white12,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                    ),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _addSystemMessage("Pasaste el turno.");
+                    },
+                    child: const Text('Pasar', style: TextStyle(color: Colors.white70)),
+                  ),
+                  // Kiss Button
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFF2A7A),
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                    ),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      setState(() {
+                        target.kissCount++;
+                        _hearts += 10;
+                        _coins += 5;
+                      });
+                      _spawnHeartParticles();
+                      _addSystemMessage("¡Le diste un beso apasionado a ${target.name}! 💋 (+10 Corazones)");
+                    },
+                    icon: const Text('💋', style: TextStyle(fontSize: 18)),
+                    label: const Text(
+                      '¡Besar!',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 15),
+              const Divider(color: Colors.white10),
+              const SizedBox(height: 8),
+              // Send Gift Option
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(context);
+                  _sendGift(target, "Rosa Roja 🌹", 50);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(15),
+                    border: Border.all(color: Colors.amber.withOpacity(0.4)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: const [
+                      Text('🌹 Enviar Rosa (50 🪙)', style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+              )
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _sendGift(Player target, String giftName, int cost) {
+    if (_coins < cost) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('¡No tienes suficientes monedas!')),
+      );
+      return;
+    }
+    setState(() {
+      _coins -= cost;
+    });
+    _spawnHeartParticles();
+    _addSystemMessage("¡Le regalaste una $giftName a ${target.name}! 🎁");
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment(0, -0.2),
+            radius: 1.2,
+            colors: [
+              Color(0xFF203A43),
+              Color(0xFF0F2027),
+              Color(0xFF0A0E21),
+            ],
+          ),
+        ),
+        child: SafeArea(
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  _buildTopHeader(),
+
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        double tableRadius = math.min(constraints.maxWidth, constraints.maxHeight) * 0.38;
+                        Offset center = Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
+
+                        return Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            // Table Carpet Glow Background
+                            Container(
+                              width: tableRadius * 2.1,
+                              height: tableRadius * 2.1,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: RadialGradient(
+                                  colors: [
+                                    const Color(0xFF00E5FF).withOpacity(0.15),
+                                    const Color(0xFFFF2A7A).withOpacity(0.05),
+                                    Colors.transparent,
+                                  ],
+                                ),
+                                border: Border.all(
+                                  color: Colors.cyanAccent.withOpacity(0.3),
+                                  width: 2,
+                                ),
+                              ),
+                            ),
+
+                            // Inner Table Rim
+                            Container(
+                              width: tableRadius * 1.3,
+                              height: tableRadius * 1.3,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: const Color(0xFF10172A).withOpacity(0.8),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.cyanAccent.withOpacity(0.2),
+                                    blurRadius: 20,
+                                    spreadRadius: 2,
+                                  )
+                                ],
+                              ),
+                            ),
+
+                            // 12 Players in a Circle
+                            ...List.generate(12, (index) {
+                              // Angle calculation starting from bottom (90 deg / pi/2)
+                              double angle = (index * (2 * math.pi / 12)) + (math.pi / 2);
+                              double posX = center.dx + tableRadius * math.cos(angle) - 30;
+                              double posY = center.dy + tableRadius * math.sin(angle) - 40;
+
+                              bool isSelected = _targetedPlayerIndex == index;
+
+                              return Positioned(
+                                left: posX,
+                                top: posY,
+                                child: _buildPlayerAvatarCard(_players[index], isSelected),
+                              );
+                            }),
+
+                            AnimatedBuilder(
+                              animation: _bottleController,
+                              builder: (context, child) {
+                                double angle = _isSpinning
+                                    ? _bottleAnimation.value
+                                    : _currentBottleAngle;
+                                return Transform.rotate(
+                                  angle: angle,
+                                  child: child,
+                                );
+                              },
+                              child: GestureDetector(
+                                onTap: _spinBottle,
+                                child: SizedBox(
+                                  width: 100,
+                                  height: 100,
+                                  child: Stack(
+                                    alignment: Alignment.center,
+                                    children: [
+                                      // Bottle Graphic Container
+                                      CustomPaint(
+                                        size: const Size(40, 100),
+                                        painter: BottlePainter(),
+                                      ),
+                                      if (!_isSpinning)
+                                        Container(
+                                          padding: const EdgeInsets.all(6),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFFF2A7A),
+                                            shape: BoxShape.circle,
+                                            boxShadow: [
+                                              BoxShadow(
+                                                color: const Color(0xFFFF2A7A).withOpacity(0.6),
+                                                blurRadius: 10,
+                                              )
+                                            ],
+                                          ),
+                                          child: const Icon(
+                                            Icons.touch_app,
+                                            color: Colors.white,
+                                            size: 20,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            // Spin Action Button below bottle if idle
+                            if (!_isSpinning)
+                              Positioned(
+                                bottom: constraints.maxHeight * 0.1,
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFFFF2A7A),
+                                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+                                    elevation: 8,
+                                    shadowColor: const Color(0xFFFF2A7A).withOpacity(0.5),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(30),
+                                    ),
+                                  ),
+                                  onPressed: _spinBottle,
+                                  child: const Text(
+                                    'GIRAR BOTELLA 🍾',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      letterSpacing: 1.1,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+
+                  _buildBottomChatSection(),
+                ],
+              ),
+
+              ..._heartParticles.map((p) {
+                return Positioned(
+                  left: p.x,
+                  top: p.y,
+                  child: Opacity(
+                    opacity: math.max(0.0, p.opacity),
+                    child: Transform.scale(
+                      scale: p.scale,
+                      child: const Text('💖', style: TextStyle(fontSize: 24)),
+                    ),
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTopHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withOpacity(0.8),
+        border: const Border(bottom: BorderSide(color: Colors.white10)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // User Info / Room ID
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 18,
+                backgroundImage: NetworkImage(_players[0].avatarUrl),
+              ),
+              const SizedBox(width: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Text(
+                    'Sala #408 VIP',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  Text(
+                    '12/12 Jugadores',
+                    style: TextStyle(color: Colors.greenAccent, fontSize: 11),
+                  ),
+                ],
+              ),
+            ],
+          ),
+
+          // Currency Counters
+          Row(
+            children: [
+              _buildBadge(Icons.monetization_on, '$_coins', Colors.amber),
+              const SizedBox(width: 8),
+              _buildBadge(Icons.favorite, '$_hearts', const Color(0xFFFF2A7A)),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.settings, color: Colors.white70, size: 22),
+                onPressed: () {},
+              )
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBadge(IconData icon, String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black38,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPlayerAvatarCard(Player player, bool isSelected) {
+    Color genderBorder = player.isFemale ? const Color(0xFFFF2A7A) : const Color(0xFF00E5FF);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Stack(
+          alignment: Alignment.center,
+          children: [
+            // Selection Glow
+            if (isSelected)
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                width: 66,
+                height: 66,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.amberAccent,
+                ),
+              ),
+            Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: genderBorder, width: 2),
+                boxShadow: [
+                  BoxShadow(
+                    color: genderBorder.withOpacity(0.3),
+                    blurRadius: 8,
+                  )
+                ],
+              ),
+              child: CircleAvatar(
+                radius: 24,
+                backgroundImage: NetworkImage(player.avatarUrl),
+              ),
+            ),
+            // VIP Crown Tag
+            if (player.isVip)
+              const Positioned(
+                top: -4,
+                child: Text('👑', style: TextStyle(fontSize: 14)),
+              ),
+            // Kisses Counter Badge
+            Positioned(
+              bottom: -2,
+              right: -2,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Row(
+                  children: [
+                    const Text('💋', style: TextStyle(fontSize: 9)),
+                    Text(
+                      '${player.kissCount}',
+                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.black54,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            player.name.split(' ')[0],
+            style: const TextStyle(fontSize: 10, color: Colors.white),
+            overflow: TextOverflow.ellipsis,
+          ),
+        )
+      ],
+    );
+  }
+
+  Widget _buildBottomChatSection() {
+    return Container(
+      height: 170,
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withOpacity(0.95),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        border: const Border(top: BorderSide(color: Colors.white10)),
+      ),
+      child: Column(
+        children: [
+          // Chat Header Bar
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: const [
+                Text(
+                  '💬 CHAT DE LA SALA',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
+                    color: Colors.cyanAccent,
+                  ),
+                ),
+                Icon(Icons.keyboard_arrow_down, color: Colors.white54, size: 20),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Colors.white10),
+
+          // Messages List View
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              itemCount: _messages.length,
+              itemBuilder: (context, index) {
+                final msg = _messages[index];
+                if (msg.isSystem) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                      '📢 ${msg.text}',
+                      style: const TextStyle(
+                        color: Colors.amberAccent,
+                        fontSize: 12,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  );
+                }
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: RichText(
+                    text: TextSpan(
+                      children: [
+                        TextSpan(
+                          text: '${msg.sender}: ',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF00E5FF),
+                            fontSize: 13,
+                          ),
+                        ),
+                        TextSpan(
+                          text: msg.text,
+                          style: const TextStyle(color: Colors.white, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+
+          // Text Input Box
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: TextField(
+                      controller: _chatController,
+                      style: const TextStyle(fontSize: 13, color: Colors.white),
+                      decoration: const InputDecoration(
+                        hintText: 'Escribe un mensaje...',
+                        hintStyle: TextStyle(color: Colors.white38, fontSize: 13),
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      ),
+                      onSubmitted: (_) => _sendMessage(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.send, color: Color(0xFFFF2A7A), size: 22),
+                  onPressed: _sendMessage,
+                )
+              ],
+            ),
+          )
+        ],
+      ),
+    );
+  }
+}
+
+class BottlePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint bodyPaint = Paint()
+      ? shader = const LinearGradient(
+          colors: [Color(0xFF26D0CE), Color(0xFF1A2980)],
+        ).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
+      : Paint();
+
+    final Paint capPaint = Paint()..color = Colors.amber;
+
+    // Bottle Shape Path
+    Path path = Path();
+    path.moveTo(size.width * 0.35, 0); // Cap top left
+    path.lineTo(size.width * 0.65, 0); // Cap top right
+    path.lineTo(size.width * 0.65, size.height * 0.25); // Neck right
+    path.quadraticBezierTo(
+      size.width * 0.9, size.height * 0.35,
+      size.width * 0.9, size.height * 0.6,
+    ); // Body shoulder right
+    path.lineTo(size.width * 0.9, size.height * 0.95); // Base right
+    path.quadraticBezierTo(
+      size.width * 0.5, size.height,
+      size.width * 0.1, size.height * 0.95,
+    ); // Base bottom curve
+    path.lineTo(size.width * 0.1, size.height * 0.6); // Base left
+    path.quadraticBezierTo(
+      size.width * 0.1, size.height * 0.35,
+      size.width * 0.35, size.height * 0.25,
+    ); // Body shoulder left
+    path.close();
+
+    // Draw Bottle
+    canvas.drawPath(path, bodyPaint);
+
+    // Draw Gold Cap
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(size.width * 0.3, 0, size.width * 0.4, size.height * 0.08),
+        const Radius.circular(3),
+      ),
+      capPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
